@@ -22,10 +22,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const path = (req.query.path as string) || '/ping';
     const url = `${BASE}${path.startsWith('/') ? '' : '/'}${path}`;
-
-    const headers: Record<string, string> = {
-      'x-api-key': KEY || '',
-    };
+    const headers: Record<string, string> = {};
+    if (KEY) {
+      headers['x-api-key'] = KEY;
+    }
 
     // forward content-type if present (for form-data & json)
     if (req.headers['content-type']) {
