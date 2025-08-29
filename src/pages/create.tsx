@@ -1,237 +1,163 @@
-import React, { useCallback, useState } from 'react';
-import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { Buffer } from 'buffer';
+"use client";
+import React, { useCallback, useState } from "react";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { Buffer } from "buffer";
 import {
   bagsCreateTokenInfo,
   bagsCreateLaunch,
   bagsCreateLaunchConfig,
-} from '@/lib/bags';
+} from "@/lib/bags";
 
-// --------- helpers ---------
-
-// likely base58 (no 0,O,I,l and no +/=)
+// ---------------- Helpers ----------------
 const isLikelyBase58 = (s: string) => /^[1-9A-HJ-NP-Za-km-z]+$/.test(s.trim());
-
-// normalize base64url and pad
 const normB64 = (s?: string) => {
   if (!s) return s;
-  let t = s.trim().replace(/-/g, '+').replace(/_/g, '/');
+  let t = s.trim().replace(/-/g, "+").replace(/_/g, "/");
   if (t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1);
-  t = t.replace(/\s+/g, '');
-  while (t.length % 4) t += '=';
+  t = t.replace(/\s+/g, "");
+  while (t.length % 4) t += "=";
   return t;
 };
-
-// Minimal Base58 decoder (Bitcoin alphabet)
-const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const B58_ALPHABET =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const B58_MAP: Record<string, number> = (() => {
   const m: Record<string, number> = {};
   for (let i = 0; i < B58_ALPHABET.length; i++) m[B58_ALPHABET[i]] = i;
   return m;
 })();
-
 function decodeBase58(str: string): Uint8Array {
   let n = 0n;
   for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    const v = B58_MAP[ch];
-    if (v === undefined) throw new Error('Invalid base58 character');
+    const v = B58_MAP[str[i]];
+    if (v === undefined) throw new Error("Invalid base58 character");
     n = n * 58n + BigInt(v);
   }
-  // convert BigInt to bytes (big-endian)
   let bytes: number[] = [];
   while (n > 0n) {
     bytes.push(Number(n % 256n));
     n = n / 256n;
   }
   bytes = bytes.reverse();
-  // handle leading zeros: each leading '1' adds a 0x00
   let leading = 0;
-  for (let i = 0; i < str.length && str[i] === '1'; i++) leading++;
+  for (let i = 0; i < str.length && str[i] === "1"; i++) leading++;
   if (leading > 0) bytes = new Array(leading).fill(0).concat(bytes);
   return new Uint8Array(bytes);
 }
-
-// attempt to find a tx-like string across many shapes
 function pickTxString(anyResp: any): string | undefined {
   const r = anyResp?.response ?? anyResp?.data ?? anyResp;
-  if (typeof r === 'string') return r;
-
+  if (typeof r === "string") return r;
   const candidates = [
     r?.transactionBase64,
     r?.transaction,
     r?.txBase64,
-    r?.tx,            // often used for config
+    r?.tx,
     r?.serializedTx,
     r?.serialized,
   ];
-
-  if (!candidates.some(Boolean) && r && typeof r === 'object') {
+  if (!candidates.some(Boolean) && r && typeof r === "object") {
     for (const k of Object.keys(r)) {
       const v = (r as any)[k];
-      if (typeof v === 'string' && v.length > 100) return v;
+      if (typeof v === "string" && v.length > 100) return v;
     }
   }
   return candidates.find(Boolean);
 }
-
-// decode tx string that might be base58 or base64
 function decodeTxStringSync(s: string): Uint8Array {
   if (isLikelyBase58(s)) return decodeBase58(s);
   const b64 = normB64(s)!;
-  return Buffer.from(b64, 'base64');
+  return Buffer.from(b64, "base64");
 }
-
-// Build a signable object for the wallet (prefers sendTransaction)
 async function buildSignable(
   raw: Uint8Array
-): Promise<{ type: 'versioned' | 'legacy'; tx: any }> {
-  const web3 = await import('@solana/web3.js');
-  // Try VersionedTransaction
+): Promise<{ type: "versioned" | "legacy"; tx: any }> {
+  const web3 = await import("@solana/web3.js");
   try {
     // @ts-ignore
     const vtx = web3.VersionedTransaction.deserialize(raw);
-    return { type: 'versioned', tx: vtx };
-  } catch (_) {
-    // Try VersionedMessage -> VersionedTransaction
+    return { type: "versioned", tx: vtx };
+  } catch {
     try {
       // @ts-ignore
       const msg = web3.VersionedMessage.deserialize(raw);
       const vtx = new web3.VersionedTransaction(msg);
-      return { type: 'versioned', tx: vtx };
-    } catch (_) {
-      // Legacy
+      return { type: "versioned", tx: vtx };
+    } catch {
       const ltx = web3.Transaction.from(raw);
-      return { type: 'legacy', tx: ltx };
+      return { type: "legacy", tx: ltx };
     }
   }
 }
+const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet").toLowerCase();
+const makeExplorerTxUrl = (sig: string) =>
+  cluster === "mainnet-beta"
+    ? `https://explorer.solana.com/tx/${sig}`
+    : `https://explorer.solana.com/tx/${sig}?cluster=${cluster}`;
 
-// --------------------------------------------
-
+// ---------------- Component ----------------
 export default function Create() {
   const { connection } = useConnection();
   const { publicKey, sendTransaction, connected } = useWallet();
 
-  // Form
-  const [name, setName] = useState('');
-  const [symbol, setSymbol] = useState('');
-  const [description, setDescription] = useState('');
+  const [name, setName] = useState("");
+  const [symbol, setSymbol] = useState("");
+  const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
 
-  // State from Bags steps
   const [tokenMint, setTokenMint] = useState<string | null>(null);
   const [ipfs, setIpfs] = useState<string | null>(null);
   const [configKey, setConfigKey] = useState<string | null>(null);
 
-  // UI + debug
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState("");
   const [creating, setCreating] = useState(false);
-  const [debugConfigResp, setDebugConfigResp] = useState<any>(null);
-  const [debugLaunchResp, setDebugLaunchResp] = useState<any>(null);
-  const [debugTxPreview, setDebugTxPreview] = useState<string | null>(null);
-  const [debugTxLen, setDebugTxLen] = useState<number | null>(null);
-  const [debugSimLogs, setDebugSimLogs] = useState<string[] | null>(null);
 
-  // STEP 1: Create token info (uploads image + metadata -> returns mint + URI)
+  // STEP 1: Create Token Info
   const onCreateTokenInfo = useCallback(async () => {
-    if (!file) return setStatus('Choose an image (≤15MB).');
-    if (!name || !symbol) return setStatus('Name and symbol are required.');
+    if (!file) return setStatus("❌ Choose an image (≤15MB).");
+    if (!name || !symbol) return setStatus("❌ Name and symbol required.");
 
-    setStatus('Creating token info (uploading image)…');
+    setStatus("Uploading metadata…");
     try {
-      const res = await bagsCreateTokenInfo({ name, symbol, description, imageFile: file });
+      const res = await bagsCreateTokenInfo({
+        name,
+        symbol,
+        description,
+        imageFile: file,
+      });
       const resp = res?.response ?? res?.data ?? res;
       const mint = resp?.tokenMint;
       const uri = resp?.tokenLaunch?.uri || resp?.tokenMetadata;
-      if (!mint || !uri) throw new Error(`Unexpected response: ${JSON.stringify(res)}`);
-
+      if (!mint || !uri) throw new Error("Unexpected Bags response");
       setTokenMint(mint);
       setIpfs(uri);
-      setStatus(`Token info created ✅ Mint: ${mint}`);
+      setStatus(`✅ Token info created. Mint: ${mint}`);
     } catch (e: any) {
-      setStatus(`Error: ${e.message ?? String(e)}`);
+      setStatus(`Error: ${e.message}`);
     }
   }, [file, name, symbol, description]);
 
-  // Ensure we have a configKey: create & sign the config tx if missing
-  const ensureConfigKey = useCallback(async (): Promise<string> => {
-    if (configKey) return configKey;
-    if (!connected || !publicKey) throw new Error('Connect your wallet first.');
-
-    setStatus('Creating launch config…');
-    const cfg = await bagsCreateLaunchConfig({ launchWallet: publicKey.toBase58() });
-    setDebugConfigResp(cfg);
-    setDebugSimLogs(null);
-
-    const resp = cfg?.response ?? cfg?.data ?? cfg;
-    const txStr = pickTxString(resp);
-    const key = resp?.configKey ?? resp?.key ?? resp?.config_key;
-    if (!txStr || !key) throw new Error('Invalid config response (missing tx or configKey).');
-
-    const raw = decodeTxStringSync(txStr);
-    setDebugTxLen(raw.length);
-    setDebugTxPreview(txStr.slice(0, 120));
-
-    try {
-      const { tx } = await buildSignable(raw);
-
-      // Optional: simulate for clearer preflight errors (will often succeed or give logs)
-      try {
-        const sim = await connection.simulateTransaction(tx);
-        if (sim?.value?.err) {
-          setDebugSimLogs(sim?.value?.logs || null);
-          throw new Error(`Simulation error before signing: ${JSON.stringify(sim.value.err)}`);
-        }
-      } catch (_) {
-        // ignore - wallets may add signatures post-sim
-      }
-
-      // Send via wallet (sign + submit), then confirm with a blockhash snapshot
-      const latest = await connection.getLatestBlockhash();
-      const sig = await sendTransaction(tx, connection, { skipPreflight: false, maxRetries: 3 });
-
-      try {
-        await connection.confirmTransaction(
-          { signature: sig, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
-          'confirmed'
-        );
-      } catch {
-        // quick retry with new snapshot if timing out
-        const latest2 = await connection.getLatestBlockhash();
-        await connection.confirmTransaction(
-          { signature: sig, blockhash: latest2.blockhash, lastValidBlockHeight: latest2.lastValidBlockHeight },
-          'confirmed'
-        );
-      }
-
-      setConfigKey(key);
-      setStatus(`Launch config confirmed ✅ (${key}) — View: https://explorer.solana.com/tx/${sig}?cluster=devnet`);
-      return key;
-    } catch (e: any) {
-      // try to capture logs for clarity
-      try {
-        const { tx } = await buildSignable(raw);
-        const sim = await connection.simulateTransaction(tx);
-        setDebugSimLogs(sim?.value?.logs || null);
-      } catch {}
-      throw new Error(`Config transaction could not be submitted: ${e.message ?? e}`);
-    }
-  }, [configKey, connected, publicKey, connection, sendTransaction]);
-
-  // STEP 2: Create the launch transaction using mint + URI + configKey
+  // STEP 2: Launch
   const onCreateLaunchTx = useCallback(async () => {
-    if (!connected || !publicKey) return setStatus('Connect your wallet first.');
-    if (!tokenMint || !ipfs) return setStatus('Create token info first.');
+    if (!connected || !publicKey) return setStatus("Connect your wallet first.");
+    if (!tokenMint || !ipfs) return setStatus("Upload token info first.");
 
     setCreating(true);
-    setDebugTxPreview(null);
-    setDebugTxLen(null);
-    setDebugSimLogs(null);
     try {
-      const key = await ensureConfigKey();
+      setStatus("Getting config key…");
+      let key = configKey;
+      if (!key) {
+        const cfg = await bagsCreateLaunchConfig({
+          launchWallet: publicKey.toBase58(),
+        });
+        key =
+          cfg?.response?.configKey ||
+          cfg?.response?.key ||
+          cfg?.configKey ||
+          cfg?.key;
+        if (!key) throw new Error("❌ Config key missing in Bags response");
+        setConfigKey(key);
+      }
 
-      setStatus('Requesting launch transaction…');
+      setStatus("Requesting launch transaction…");
       const resp = await bagsCreateLaunch({
         ipfs,
         tokenMint,
@@ -240,98 +166,111 @@ export default function Create() {
         configKey: key,
       });
 
-      setDebugLaunchResp(resp);
-
       const txStr = pickTxString(resp);
-      if (!txStr) throw new Error('No transaction in response.');
-
+      if (!txStr) throw new Error("No transaction in response.");
       const raw = decodeTxStringSync(txStr);
-      setDebugTxLen(raw.length);
-      setDebugTxPreview(txStr.slice(0, 120));
-
       const { tx } = await buildSignable(raw);
 
-      // Optional: simulate to catch errors early
-      try {
-        const sim = await connection.simulateTransaction(tx);
-        if (sim?.value?.err) {
-          setDebugSimLogs(sim?.value?.logs || null);
-          throw new Error(`Simulation error before signing: ${JSON.stringify(sim.value.err)}`);
-        }
-      } catch (_) {}
-
       const latest = await connection.getLatestBlockhash();
-      const sig = await sendTransaction(tx, connection, { skipPreflight: false, maxRetries: 3 });
+      const sig = await sendTransaction(tx, connection, {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+      await connection.confirmTransaction(
+        {
+          signature: sig,
+          blockhash: latest.blockhash,
+          lastValidBlockHeight: latest.lastValidBlockHeight,
+        },
+        "confirmed"
+      );
 
-      try {
-        await connection.confirmTransaction(
-          { signature: sig, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
-          'confirmed'
-        );
-      } catch {
-        const latest2 = await connection.getLatestBlockhash();
-        await connection.confirmTransaction(
-          { signature: sig, blockhash: latest2.blockhash, lastValidBlockHeight: latest2.lastValidBlockHeight },
-          'confirmed'
-        );
-      }
-
-      setStatus(`Launched! Tx: ${sig} — View: https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+      setStatus(`🎉 Launched! View: ${makeExplorerTxUrl(sig)}`);
     } catch (e: any) {
-      setStatus(`Error: ${e.message ?? String(e)}`);
+      setStatus(`Error: ${e.message}`);
     } finally {
       setCreating(false);
     }
-  }, [connected, publicKey, tokenMint, ipfs, ensureConfigKey, connection, sendTransaction]);
+  }, [connected, publicKey, tokenMint, ipfs, configKey, connection, sendTransaction]);
 
-  // ---------- UI ----------
+  // ---------------- UI ----------------
   return (
-    <div>
-      <h1 className="text-xl font-bold">Create Token</h1>
+    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white py-12">
+      <div className="max-w-2xl mx-auto bg-gray-800 rounded-2xl p-8 shadow-xl">
+        <h1 className="text-3xl font-bold mb-6">🚀 Create Your MemeCoin</h1>
 
-      <div className="grid gap-3 mt-4">
-        <input className="border p-2 rounded" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className="border p-2 rounded" placeholder="Symbol" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
-        <textarea className="border p-2 rounded" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-        <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        {/* Upload */}
+        <label className="block mb-4">
+          <span className="text-gray-300">Upload Logo</span>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+            className="mt-2 block w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4
+              file:rounded-lg file:border-0
+              file:text-sm file:font-semibold
+              file:bg-purple-600 file:text-white
+              hover:file:bg-purple-700"
+          />
+        </label>
 
-        <div className="flex gap-2">
-          <button onClick={onCreateTokenInfo} className="px-4 py-2 border rounded">1) Create Token Info</button>
-          <button onClick={onCreateLaunchTx} disabled={!tokenMint || !ipfs || creating} className="px-4 py-2 border rounded">2) Create Launch Tx</button>
+        {/* Inputs */}
+        <input
+          className="w-full mb-3 p-3 rounded bg-gray-700 text-white placeholder-gray-400"
+          placeholder="Token Name (e.g. Doge Elon)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          className="w-full mb-3 p-3 rounded bg-gray-700 text-white placeholder-gray-400"
+          placeholder="Symbol (e.g. DOGE)"
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+        />
+        <textarea
+          className="w-full mb-3 p-3 rounded bg-gray-700 text-white placeholder-gray-400"
+          placeholder="Description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+
+        {/* Actions */}
+        <div className="flex gap-3 mb-4">
+          <button
+            onClick={onCreateTokenInfo}
+            className="flex-1 px-4 py-3 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold"
+          >
+            1️⃣ Create Token Info
+          </button>
+          <button
+            onClick={onCreateLaunchTx}
+            disabled={!tokenMint || !ipfs || creating}
+            className="flex-1 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg font-semibold"
+          >
+            2️⃣ Launch Token
+          </button>
         </div>
-      </div>
 
-      {status && <p className="mt-3 text-sm">{status}</p>}
-      {tokenMint && <p className="mt-1 text-xs">Token Mint: {tokenMint}</p>}
-      {ipfs && <p className="mt-1 text-xs">Metadata URI: {ipfs}</p>}
-      {configKey && <p className="mt-1 text-xs">Config Key: {configKey}</p>}
-
-      {/* Debug panel */}
-      <div className="mt-6 p-3 border rounded bg-gray-50">
-        <h2 className="font-semibold mb-2">Debug</h2>
-        {debugTxLen != null && <div className="text-xs">Tx byte length: {debugTxLen}</div>}
-        {debugTxPreview && (
-          <div className="text-xs break-all">
-            Tx preview (first 120 chars): <code>{debugTxPreview}</code>
+        {/* Status */}
+        {status && (
+          <div className="p-3 bg-gray-900 rounded-lg text-sm whitespace-pre-wrap">
+            {status}
           </div>
         )}
-        {debugConfigResp && (
-          <>
-            <div className="text-xs mt-2 font-medium">Config response:</div>
-            <pre className="text-xs overflow-auto bg-white p-2 rounded border">{JSON.stringify(debugConfigResp, null, 2)}</pre>
-          </>
-        )}
-        {debugLaunchResp && (
-          <>
-            <div className="text-xs mt-2 font-medium">Launch response:</div>
-            <pre className="text-xs overflow-auto bg-white p-2 rounded border">{JSON.stringify(debugLaunchResp, null, 2)}</pre>
-          </>
-        )}
-        {debugSimLogs && (
-          <>
-            <div className="text-xs mt-2 font-medium">Simulation logs:</div>
-            <pre className="text-xs overflow-auto bg-white p-2 rounded border">{JSON.stringify(debugSimLogs, null, 2)}</pre>
-          </>
+
+        {/* Preview */}
+        {file && (
+          <div className="mt-4 flex items-center gap-4">
+            <img
+              src={URL.createObjectURL(file)}
+              alt="preview"
+              className="w-20 h-20 rounded-lg border border-gray-700"
+            />
+            <div>
+              <p className="font-semibold">{name || "Unnamed Coin"}</p>
+              <p className="opacity-70">{symbol}</p>
+            </div>
+          </div>
         )}
       </div>
     </div>

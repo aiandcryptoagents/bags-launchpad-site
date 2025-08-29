@@ -1,0 +1,24 @@
+{
+  "name": "Satoshi",
+  "symbol": "STH",
+  "description": "The only satoshi coin you need",
+  "image": "ipfs://QmeeGHbQsbPdjdEz7p34NVUYsFWXRnb1jYkAZLkd5M8dZe",
+  "seller_fee_basis_points": 0,
+  "external_url": "https://bags.fm",
+  "attributes": [],
+  "properties": {
+    "category": "image",
+    "files": [
+      {
+        "uri": "ipfs://QmeeGHbQsbPdjdEz7p34NVUYsFWXRnb1jYkAZLkd5M8dZe",
+        "type": "image/png"
+      }
+    ],
+    "creators": []
+  },
+  "extensions": {
+    "website": "",
+    "twitter": "",
+    "telegram": ""
+  }
+}
